@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = [
+    "food-aggregator",
+    "api",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+api = { path = "api" }
+food-aggregator = { path = "food-aggregator" }
+
+[workspace.lints.rust]
+rust_2018_idioms = "deny"

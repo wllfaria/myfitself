@@ -1,0 +1,7 @@
+[package]
+name = "food-aggregator"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio = { version = "1.44.2", features = ["rt", "macros", "rt-multi-thread"] }
