@@ -4,4 +4,14 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-tokio = { version = "1.44.2", features = ["rt", "macros", "rt-multi-thread"] }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+dotenvy.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+
+governor = { version = "0.10.0" }
+reqwest = { version = "0.12.18", features = ["json"] }

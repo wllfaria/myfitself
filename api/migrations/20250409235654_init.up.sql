@@ -35,8 +35,8 @@ CREATE TABLE IF NOT EXISTS foods (
     name                TEXT NOT NULL,
     source              FOOD_SOURCE_TYPE NOT NULL,
     external_id         INT NOT NULL,
-    fndds_code          VARCHAR(24) NOT NULL UNIQUE,
-    wweia_category      UUID NOT NULL
+    fndds_code          VARCHAR(24) UNIQUE,
+    wweia_category      UUID,
     CONSTRAINT fk_wweia_category FOREIGN KEY(wweia_category) REFERENCES wweia_categories(id)
 );
 
