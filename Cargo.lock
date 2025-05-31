@@ -62,6 +62,7 @@ dependencies = [
  "chrono",
  "clerk-rs",
  "dotenvy",
+ "food-aggregator",
  "serde",
  "serde_json",
  "sqlx",
@@ -595,11 +596,13 @@ name = "food-aggregator"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "dotenvy",
  "governor",
  "reqwest",
  "serde",
  "serde_json",
+ "sqlx",
  "thiserror",
  "tokio",
  "tracing",

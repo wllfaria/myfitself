@@ -58,19 +58,3 @@ where
         })
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_something() {
-        let client = UsdaClient::new();
-        let mut aggregator = UsdaAggregator::new(client);
-
-        let result = aggregator.aggregate().await;
-        println!("{result:?}");
-
-        panic!();
-    }
-}

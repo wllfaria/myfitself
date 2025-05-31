@@ -30,6 +30,12 @@ CREATE TABLE IF NOT EXISTS user_profile (
     CONSTRAINT fk_user FOREIGN KEY(user_id) REFERENCES users(id)
 );
 
+CREATE TABLE IF NOT EXISTS wweia_categories (
+    id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    code                INT NOT NULL UNIQUE,
+    description         VARCHAR(255) NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS foods (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     name                TEXT NOT NULL,
@@ -40,10 +46,9 @@ CREATE TABLE IF NOT EXISTS foods (
     CONSTRAINT fk_wweia_category FOREIGN KEY(wweia_category) REFERENCES wweia_categories(id)
 );
 
-CREATE TABLE IF NOT EXISTS wweia_categories (
+CREATE TABLE IF NOT EXISTS aggregation_metadata (
     id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    code                INT NOT NULL UNIQUE,
-    description         VARCHAR(255) NOT NULL
+    last_run            TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- CREATE TABLE servings (

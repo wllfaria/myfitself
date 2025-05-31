@@ -1,6 +1,7 @@
 use axum::http::StatusCode;
 use serde::Serialize;
 
+pub mod aggregator;
 pub mod auth;
 
 #[derive(Serialize)]

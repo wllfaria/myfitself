@@ -16,6 +16,7 @@ pub async fn attach_user(
 ) -> Result<Response, AppError> {
     let clerk_user = services::clerk::get_clerk_user(&state, jwt).await?;
     let user = models::users::User::sync_from_clerk(&state, clerk_user).await?;
+    tracing::info!("{user:?}");
 
     req.extensions_mut().insert(user);
 
