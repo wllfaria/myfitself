@@ -24,7 +24,7 @@ pub struct UsdaFoodSearchCriteria {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsdaFoodSearchFood {
-    pub fdc_id: usize,
+    pub fdc_id: i32,
     pub description: String,
     #[serde(default)]
     pub common_names: Option<String>,
@@ -32,12 +32,12 @@ pub struct UsdaFoodSearchFood {
     pub additional_descriptions: Option<String>,
     pub data_type: String,
     #[serde(default)]
-    pub food_code: Option<usize>,
+    pub food_code: Option<i32>,
     pub published_date: String,
     #[serde(default)]
     pub food_category: Option<String>,
     #[serde(default)]
-    pub food_category_id: Option<usize>,
+    pub food_category_id: Option<i32>,
     pub all_highlight_fields: String,
     pub score: f32,
     pub food_nutrients: Vec<UsdaFoodNutrient>,

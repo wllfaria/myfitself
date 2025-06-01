@@ -50,3 +50,9 @@ impl From<anyhow::Error> for AppError {
         AppError::ServerError(err.to_string())
     }
 }
+
+impl From<sqlx::Error> for AppError {
+    fn from(err: sqlx::Error) -> Self {
+        AppError::ServerError(err.to_string())
+    }
+}

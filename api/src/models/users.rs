@@ -1,8 +1,8 @@
 use serde::Serialize;
+use sqlx::PgConnection;
 use sqlx::prelude::FromRow;
 use sqlx::types::chrono::{DateTime, Utc};
 
-use crate::AppState;
 use crate::services::clerk::ClerkUser;
 
 #[derive(Debug, Clone, FromRow, Serialize)]
@@ -20,23 +20,26 @@ pub struct User {
 }
 
 impl User {
-    pub async fn sync_from_clerk(state: &AppState, clerk_user: ClerkUser) -> anyhow::Result<User> {
+    pub async fn sync_from_clerk(
+        executor: &mut PgConnection,
+        clerk_user: ClerkUser,
+    ) -> anyhow::Result<User> {
         let user = sqlx::query_as!(
             User,
             "SELECT * FROM users WHERE clerk_id = $1",
             clerk_user.id()
         )
-        .fetch_optional(&state.db)
+        .fetch_optional(executor.as_mut())
         .await?;
 
         match user {
             Some(user) => Ok(user),
-            None => User::create_from_clerk(state, clerk_user).await,
+            None => User::create_from_clerk(executor, clerk_user).await,
         }
     }
 
     pub async fn create_from_clerk(
-        state: &AppState,
+        executor: &mut PgConnection,
         clerk_user: ClerkUser,
     ) -> anyhow::Result<User> {
         let user = sqlx::query_as!(
@@ -51,7 +54,7 @@ impl User {
             clerk_user.has_image(),
             clerk_user.image_url(),
         )
-        .fetch_one(&state.db)
+        .fetch_one(executor)
         .await?;
 
         Ok(user)

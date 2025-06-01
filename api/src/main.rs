@@ -58,7 +58,9 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(async move {
         loop {
             // TODO: don't ignore the error here
-            food_aggregator::aggregate_food_data(&cron_db).await.ok();
+            food_aggregator::aggregate_food_data(cron_db.clone())
+                .await
+                .ok();
 
             const ONE_DAY: u64 = 60 * 60 * 24;
             tokio::time::sleep(tokio::time::Duration::from_secs(ONE_DAY)).await;

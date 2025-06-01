@@ -1,3 +1,6 @@
+mod models;
+mod usda;
+
 use std::collections::BinaryHeap;
 use std::pin::Pin;
 
@@ -6,9 +9,6 @@ use sqlx::PgPool;
 use sqlx::types::chrono::Utc;
 use tokio::time::Instant;
 use usda::{UsdaAggregator, UsdaClient};
-
-mod aggregate_metadata_model;
-mod usda;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -37,7 +37,7 @@ pub enum AggregateStatus {
 }
 
 pub trait Aggregator: Send + Sync {
-    fn aggregate(&mut self) -> BoxFuture<AggregateStatus>;
+    fn aggregate(&mut self, pool: PgPool) -> BoxFuture<anyhow::Result<AggregateStatus>>;
 }
 
 struct ScheduledAggregator {
@@ -65,10 +65,11 @@ impl PartialEq for ScheduledAggregator {
 
 impl Eq for ScheduledAggregator {}
 
-pub async fn aggregate_food_data(pool: &PgPool) -> anyhow::Result<()> {
+pub async fn aggregate_food_data(pool: PgPool) -> anyhow::Result<()> {
+    let mut conn = pool.acquire().await?;
     // TODO: probably not just propagate the error up here
     let last_run_entry =
-        aggregate_metadata_model::AggregateMetadataModel::get_last_run(pool).await?;
+        models::aggregation_metadata::AggregateMetadataModel::get_last_run(conn.as_mut()).await?;
 
     let should_run = match last_run_entry {
         Some(entry) => Utc::now() - entry.last_run >= Duration::days(30),
@@ -96,7 +97,8 @@ pub async fn aggregate_food_data(pool: &PgPool) -> anyhow::Result<()> {
             tokio::time::sleep_until(tokio::time::Instant::now() + delay).await;
         }
 
-        if let AggregateStatus::PendingUntil(when) = task.aggregator.aggregate().await {
+        if let AggregateStatus::PendingUntil(when) = task.aggregator.aggregate(pool.clone()).await?
+        {
             task.wake_time = when;
             queue.push(task);
         }
