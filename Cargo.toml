@@ -23,6 +23,8 @@ anyhow = "1.0.97"
 thiserror = "2.0.12"
 sqlx = { version = "0.8.3", features = ["runtime-tokio", "postgres", "chrono", "uuid"] }
 chrono = { version = "0.4.40", features = ["serde"] }
+derive_more = { version = "2.0.1", features = ["full"] }
+
 
 [workspace.lints.rust]
 rust_2018_idioms = "deny"

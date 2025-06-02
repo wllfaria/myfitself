@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use derive_more::Display;
 use governor::RateLimiter;
 use governor::clock::{Clock, QuantaClock, Reference};
 use governor::state::{InMemoryState, NotKeyed};
@@ -45,14 +46,12 @@ enum WorkerMessage {
     Finished(WorkerId),
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Display, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WorkerId(usize);
 
 impl WorkerId {
-    fn next(&mut self) -> Self {
-        let id = *self;
+    fn next(&mut self) {
         self.0 += 1;
-        id
     }
 }
 
@@ -92,12 +91,14 @@ where
         }
     }
 
+    #[tracing::instrument(skip(self, tx), fields(source = %self.client.name()))]
     pub async fn run(&mut self, tx: &mut PgConnection) -> anyhow::Result<AggregateStatus> {
         let (sender, mut receiver) = tokio::sync::mpsc::channel(self.task_bound);
         // Start from page 2 as first page will always be fetched outside to get the total_pages
         // data from the api
         // TODO: maybe receive this as an argument
         let mut current_page = 2;
+        tracing::info!(%current_page, "supervisor starting");
 
         loop {
             while self.workers.len() < self.task_bound {
@@ -116,18 +117,48 @@ where
 
                 let sender = sender.clone();
                 let client = self.client.clone();
-                let worker_id = self.worker_id.next();
+                let worker_id = self.worker_id;
+                self.worker_id.next();
+
+                let span = tracing::span!(
+                    tracing::Level::INFO,
+                    "page_worker",
+                    %worker_id,
+                    %current_page
+                );
 
                 let handle = tokio::spawn(async move {
-                    let sender = sender.clone();
-                    let result = client.fetch(current_page).await?;
+                    let _guard = span.enter();
+                    tracing::info!("Worker started");
 
-                    sender.send(WorkerMessage::Finished(worker_id)).await?;
+                    let sender = sender.clone();
+                    let result = match client.fetch(current_page).await {
+                        Ok(data) => {
+                            tracing::debug!("Fetched page successfully");
+                            data
+                        }
+                        Err(e) => {
+                            tracing::error!(error = ?e, "Failed to fetch page");
+                            return Err(e);
+                        }
+                    };
+
+                    if let Err(e) = sender.send(WorkerMessage::Finished(worker_id)).await {
+                        tracing::error!(error = ?e, "Failed to send finished message");
+                        return Err(e.into());
+                    };
+
                     Ok(result)
                 });
 
                 current_page += 1;
                 self.workers.insert(worker_id, handle);
+            }
+
+            if self.workers.is_empty() {
+                // This is a warning as its very suspicious if there is no content on a data source
+                tracing::warn!("No work to be done");
+                return Ok(AggregateStatus::Finished);
             }
 
             while let Some(message) = receiver.recv().await {
@@ -140,14 +171,19 @@ where
                             .await?;
 
                         match result {
-                            Ok(data) => persist_food_data(tx, data).await?,
-                            Err(_) => todo!(),
+                            Ok(data) => {
+                                tracing::debug!(%worker_id, "Persisting food data");
+                                persist_food_data(tx, data).await?;
+                                tracing::info!(%worker_id, "Data persisted");
+                            }
+                            Err(e) => tracing::error!(?worker_id, error = ?e, "Worker failed"),
                         };
                     }
                 }
 
-                if self.client.is_finished(1) && self.workers.is_empty() {
-                    break;
+                if self.client.is_finished(current_page) && self.workers.is_empty() {
+                    tracing::info!("All workers completed");
+                    return Ok(AggregateStatus::Finished);
                 }
             }
         }

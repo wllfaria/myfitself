@@ -20,6 +20,7 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub trait FoodSource: Send + Sync {
     type Data: FoodData;
 
+    fn name(&self) -> &str;
     fn fetch(&self, page: usize) -> impl Future<Output = anyhow::Result<Self::Data>> + Send;
     fn is_finished(&self, current_page: usize) -> bool;
 }
@@ -158,11 +159,8 @@ pub async fn aggregate_food_data(pool: PgPool) -> anyhow::Result<()> {
         }
     }
 
-    tracing::info!("adding to db the metadata");
-
     AggregateMetadataModel::create(conn.as_mut()).await?;
-
-    tracing::info!("added to db the metadata");
+    tracing::info!("Aggregation metadata stored");
 
     Ok(())
 }

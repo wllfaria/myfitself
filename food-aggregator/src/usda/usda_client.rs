@@ -1,9 +1,11 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use super::usda_types::UsdaFoodSearchResponse;
 use crate::FoodSource;
 
 pub struct UsdaClient {
     page_size: usize,
-    total_pages: usize,
+    total_pages: AtomicUsize,
     api_url: String,
     api_key: String,
 }
@@ -17,7 +19,7 @@ impl UsdaClient {
 
         Self {
             page_size: 200,
-            total_pages: 2,
+            total_pages: AtomicUsize::new(0),
             api_url,
             api_key,
         }
@@ -27,8 +29,12 @@ impl UsdaClient {
 impl FoodSource for UsdaClient {
     type Data = UsdaFoodSearchResponse;
 
+    fn name(&self) -> &str {
+        "USDA"
+    }
+
     fn is_finished(&self, current_page: usize) -> bool {
-        current_page == self.total_pages
+        current_page > self.total_pages.load(Ordering::SeqCst)
     }
 
     fn fetch(&self, current_page: usize) -> impl Future<Output = anyhow::Result<Self::Data>> {
@@ -60,7 +66,7 @@ impl FoodSource for UsdaClient {
                 Err(e) => todo!("{e:?}"),
             };
 
-            // self.total_pages = data.total_pages;
+            self.total_pages.store(data.total_pages, Ordering::SeqCst);
 
             Ok(data)
         })
