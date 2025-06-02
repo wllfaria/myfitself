@@ -1,33 +1,27 @@
 mod models;
+mod supervisor;
 mod usda;
 
 use std::collections::BinaryHeap;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use chrono::Duration;
+use models::aggregation_metadata::AggregateMetadataModel;
 use sqlx::PgPool;
 use sqlx::types::chrono::Utc;
+use supervisor::FoodData;
+use tokio::sync::{Mutex, Notify};
 use tokio::time::Instant;
 use usda::{UsdaAggregator, UsdaClient};
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum FoodSourceStatus {
-    HasRemainingResults,
-    SyncFinished,
-}
-
-#[derive(Debug)]
-pub struct FoodSourceData<D> {
-    pub data: D,
-    pub status: FoodSourceStatus,
-}
-
 pub trait FoodSource: Send + Sync {
-    type Data;
+    type Data: FoodData;
 
-    fn fetch_next(&mut self) -> impl Future<Output = FoodSourceData<Self::Data>> + Send;
+    fn fetch(&self, page: usize) -> impl Future<Output = anyhow::Result<Self::Data>> + Send;
+    fn is_finished(&self, current_page: usize) -> bool;
 }
 
 #[derive(Debug)]
@@ -37,7 +31,7 @@ pub enum AggregateStatus {
 }
 
 pub trait Aggregator: Send + Sync {
-    fn aggregate(&mut self, pool: PgPool) -> BoxFuture<anyhow::Result<AggregateStatus>>;
+    fn aggregate(&mut self, conn: PgPool) -> BoxFuture<anyhow::Result<AggregateStatus>>;
 }
 
 struct ScheduledAggregator {
@@ -65,44 +59,110 @@ impl PartialEq for ScheduledAggregator {
 
 impl Eq for ScheduledAggregator {}
 
+#[tracing::instrument(skip_all)]
 pub async fn aggregate_food_data(pool: PgPool) -> anyhow::Result<()> {
+    tracing::info!("Starting aggregation workflow");
     let mut conn = pool.acquire().await?;
     // TODO: probably not just propagate the error up here
     let last_run_entry =
         models::aggregation_metadata::AggregateMetadataModel::get_last_run(conn.as_mut()).await?;
 
-    let should_run = match last_run_entry {
+    let should_run = match &last_run_entry {
         Some(entry) => Utc::now() - entry.last_run >= Duration::days(30),
         None => true,
     };
 
     if !should_run {
+        tracing::info!("Not enough time has passed since last aggregation");
         return Ok(());
     };
 
     let client = UsdaClient::new();
     let usda_aggregator = UsdaAggregator::new(client);
 
-    let mut queue = BinaryHeap::new();
+    let queue = Arc::new(Mutex::new(BinaryHeap::new()));
+    let active_handles = Arc::new(Mutex::new(Vec::new()));
+    let notify = Arc::new(Notify::new());
 
-    queue.push(ScheduledAggregator {
+    queue.lock().await.push(ScheduledAggregator {
         aggregator: Box::new(usda_aggregator),
         wake_time: Instant::now(),
     });
 
-    while let Some(mut task) = queue.pop() {
-        let now = Instant::now();
-        if task.wake_time > now {
-            let delay = task.wake_time - now;
-            tokio::time::sleep_until(tokio::time::Instant::now() + delay).await;
-        }
+    loop {
+        let mut queue_guard = queue.lock().await;
+        let maybe_task_time = queue_guard.peek().map(|task| task.wake_time);
 
-        if let AggregateStatus::PendingUntil(when) = task.aggregator.aggregate(pool.clone()).await?
-        {
-            task.wake_time = when;
-            queue.push(task);
+        match maybe_task_time {
+            // When the task is pending until a future time, we wait either until that time come,
+            // or a new notification is received, which could be from a task that has a earlier
+            // wait time and should become the new binary heap head
+            Some(wake_time) if wake_time > Instant::now() => {
+                tokio::select! {
+                    _ = tokio::time::sleep_until(wake_time) => {},
+                    _ = notify.notified() => {},
+                }
+                continue;
+            }
+            // When the task can be started, we add it to the active handles vector and spawn a
+            // task for it, the task will notify once its finished, no matter the result
+            Some(_) => {
+                let mut task = queue_guard.pop().unwrap();
+
+                let pool = pool.clone();
+                let queue = queue.clone();
+                let notify = notify.clone();
+
+                let handle = tokio::spawn(async move {
+                    match task.aggregator.aggregate(pool.clone()).await {
+                        Err(_) => {}
+                        Ok(AggregateStatus::Finished) => {
+                            tracing::info!("Finished aggregation");
+                        }
+                        Ok(AggregateStatus::PendingUntil(when)) => {
+                            task.wake_time = when;
+                            queue.lock().await.push(task);
+                        }
+                    }
+
+                    notify.notify_one();
+                    Ok::<(), anyhow::Error>(())
+                });
+
+                active_handles.lock().await.push(handle);
+            }
+            // Drains every completed handle from the handles vector, and waits them to check if
+            // the task succeeded or errored, and if after draining everything, both the active
+            // handles and the queue are empty, we are done syncing
+            None => {
+                let mut handles_guard = active_handles.lock().await;
+                let (complete, pending) = handles_guard
+                    .drain(..)
+                    .partition::<Vec<_>, _>(|h| h.is_finished());
+
+                *handles_guard = pending;
+
+                for handle in complete {
+                    if handle.await.is_err() {
+                        todo!();
+                    }
+                }
+
+                if queue_guard.is_empty() && handles_guard.is_empty() {
+                    tracing::info!("No more work to be done");
+                    break;
+                }
+
+                notify.notified().await;
+            }
         }
     }
+
+    tracing::info!("adding to db the metadata");
+
+    AggregateMetadataModel::create(conn.as_mut()).await?;
+
+    tracing::info!("added to db the metadata");
 
     Ok(())
 }

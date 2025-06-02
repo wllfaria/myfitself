@@ -12,13 +12,13 @@ pub struct WWEIACategories {
 }
 
 #[derive(Debug)]
-pub struct CreateWWEIACategoryPayload {
+pub struct CreateWWEIACategoryPayload<'data> {
     code: i32,
-    name: String,
+    name: &'data str,
 }
 
-impl CreateWWEIACategoryPayload {
-    pub fn new(code: i32, name: String) -> Self {
+impl<'data> CreateWWEIACategoryPayload<'data> {
+    pub fn new(code: i32, name: &'data str) -> Self {
         Self { code, name }
     }
 }
@@ -26,7 +26,7 @@ impl CreateWWEIACategoryPayload {
 impl WWEIACategories {
     pub async fn maybe_create(
         executor: &mut PgConnection,
-        create_category_payload: CreateWWEIACategoryPayload,
+        create_category_payload: CreateWWEIACategoryPayload<'_>,
     ) -> anyhow::Result<WWEIACategories> {
         let category = sqlx::query_as!(
             WWEIACategories,

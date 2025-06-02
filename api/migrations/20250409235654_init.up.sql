@@ -19,6 +19,16 @@ CREATE TYPE ACTIVITY_LEVEL_TYPE AS ENUM (
     'very_active'
 );
 
+CREATE OR REPLACE FUNCTION set_updated_at ()
+    RETURNS TRIGGER
+    AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$
+LANGUAGE plpgsql;
+
 CREATE TABLE IF NOT EXISTS users (
     id uuid DEFAULT uuid_generate_v4 () PRIMARY KEY,
     clerk_id varchar(255) NOT NULL UNIQUE,
@@ -93,7 +103,7 @@ CREATE TABLE IF NOT EXISTS food_nutrients (
     id uuid PRIMARY KEY DEFAULT uuid_generate_v4 (),
     food_id uuid NOT NULL,
     nutrient_id uuid NOT NULL,
-    value numeric NOT NULL,
+    value float4 NOT NULL,
     unit_id uuid NOT NULL,
     source_id uuid NOT NULL,
     created_at timestamptz NOT NULL DEFAULT NOW(),
@@ -143,3 +153,24 @@ CREATE TABLE IF NOT EXISTS aggregation_metadata (
 --     CONSTRAINT fk_food FOREIGN KEY(food_id) REFERENCES foods(id),
 --     CONSTRAINT fk_serving FOREIGN KEY(serving_id) REFERENCES servings(id)
 -- );
+DO $$
+DECLARE
+    tbl RECORD;
+BEGIN
+    FOR tbl IN
+    SELECT
+        table_schema,
+        table_name
+    FROM
+        information_schema.columns
+    WHERE
+        column_name = 'updated_at'
+        AND table_schema = 'public' LOOP
+            EXECUTE format('CREATE TRIGGER trg_set_updated_at
+             BEFORE UPDATE ON %I.%I
+             FOR EACH ROW
+             EXECUTE FUNCTION set_updated_at();', tbl.table_schema, tbl.table_name);
+        END LOOP;
+END;
+$$;
+

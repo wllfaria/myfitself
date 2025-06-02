@@ -28,4 +28,15 @@ impl AggregateMetadataModel {
 
         Ok(aggregation_metadata)
     }
+
+    pub async fn create(executor: &mut PgConnection) -> anyhow::Result<AggregateMetadataModel> {
+        let aggregation_metadata = sqlx::query_as!(
+            AggregateMetadataModel,
+            "INSERT INTO aggregation_metadata DEFAULT VALUES RETURNING *;",
+        )
+        .fetch_one(executor)
+        .await?;
+
+        Ok(aggregation_metadata)
+    }
 }

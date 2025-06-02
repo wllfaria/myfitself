@@ -6,7 +6,7 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum AppError {
-    #[error("Something went wront: {0}")]
+    #[error("Something went wrong: {0}")]
     ServerError(String),
 }
 

@@ -1,32 +1,32 @@
 use chrono::{DateTime, Utc};
+use sqlx::PgConnection;
 use sqlx::prelude::FromRow;
 use sqlx::types::Uuid;
-use sqlx::{Executor, PgConnection, PgPool, Postgres};
 
 #[derive(Debug, FromRow)]
 pub struct Foods {
-    id: Uuid,
-    name: String,
-    source_id: Uuid,
-    external_id: i32,
-    fndds_code: Option<i32>,
-    wweia_category: Option<Uuid>,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
+    pub id: Uuid,
+    pub name: String,
+    pub source_id: Uuid,
+    pub external_id: i32,
+    pub fndds_code: Option<i32>,
+    pub wweia_category: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug)]
-pub struct CreateFoodPayload {
-    pub name: String,
+pub struct CreateFoodPayload<'data> {
+    pub name: &'data str,
     pub fndds_code: Option<i32>,
     pub source_id: Uuid,
     pub external_id: i32,
     pub wweia_category: Option<Uuid>,
 }
 
-impl CreateFoodPayload {
+impl<'data> CreateFoodPayload<'data> {
     pub fn new(
-        name: String,
+        name: &'data str,
         fndds_code: Option<i32>,
         source_id: Uuid,
         external_id: i32,
@@ -45,7 +45,7 @@ impl CreateFoodPayload {
 impl Foods {
     pub async fn create_or_update(
         executor: &mut PgConnection,
-        create_food_payload: CreateFoodPayload,
+        create_food_payload: CreateFoodPayload<'_>,
     ) -> anyhow::Result<Foods> {
         let food = sqlx::query_as!(
             Foods,

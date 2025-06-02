@@ -4,10 +4,10 @@ use sqlx::prelude::FromRow;
 
 #[derive(Debug, FromRow)]
 pub struct Units {
-    id: sqlx::types::Uuid,
-    name: String,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
+    pub id: sqlx::types::Uuid,
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 impl Units {

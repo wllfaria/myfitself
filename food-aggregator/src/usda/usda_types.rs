@@ -1,24 +1,21 @@
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UsdaFoodSearchResponse {
-    pub total_hits: usize,
-    pub current_page: usize,
-    pub total_pages: usize,
-    pub page_list: Vec<usize>,
-    pub food_search_criteria: UsdaFoodSearchCriteria,
-    pub foods: Vec<UsdaFoodSearchFood>,
-    pub aggregations: UsdaFoodSearchAggregations,
-}
+use crate::supervisor::{FoodData, FoodEntry, FoodEntryNutrient};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct UsdaFoodSearchCriteria {
-    pub page_number: usize,
-    pub number_of_results_per_page: usize,
-    pub page_size: usize,
-    pub require_all_words: bool,
+pub struct UsdaFoodSearchResponse {
+    pub total_pages: usize,
+    pub foods: Vec<UsdaFoodSearchFood>,
+}
+
+impl FoodData for UsdaFoodSearchResponse {
+    type Entry = UsdaFoodSearchFood;
+    type EntryIter = std::vec::IntoIter<Self::Entry>;
+
+    fn entries(self) -> Self::EntryIter {
+        self.foods.into_iter()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -27,52 +24,62 @@ pub struct UsdaFoodSearchFood {
     pub fdc_id: i32,
     pub description: String,
     #[serde(default)]
-    pub common_names: Option<String>,
-    #[serde(default)]
-    pub additional_descriptions: Option<String>,
-    pub data_type: String,
-    #[serde(default)]
     pub food_code: Option<i32>,
-    pub published_date: String,
     #[serde(default)]
     pub food_category: Option<String>,
     #[serde(default)]
     pub food_category_id: Option<i32>,
-    pub all_highlight_fields: String,
-    pub score: f32,
     pub food_nutrients: Vec<UsdaFoodNutrient>,
+}
+
+impl FoodEntry for UsdaFoodSearchFood {
+    type Nutrient = UsdaFoodNutrient;
+    type NutrientIter = std::vec::IntoIter<Self::Nutrient>;
+
+    fn source(&self) -> String {
+        String::from("USDA")
+    }
+
+    fn wweia_data(&self) -> (Option<i32>, Option<&String>) {
+        (self.food_category_id, self.food_category.as_ref())
+    }
+
+    fn name(&self) -> &str {
+        &self.description
+    }
+
+    fn fndds_code(&self) -> Option<i32> {
+        self.food_code
+    }
+
+    fn id(&self) -> i32 {
+        self.fdc_id
+    }
+
+    fn nutrients(self) -> Self::NutrientIter {
+        self.food_nutrients.into_iter()
+    }
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsdaFoodNutrient {
-    pub nutrient_id: usize,
     pub nutrient_name: String,
-    pub nutrient_number: String,
     pub unit_name: String,
     #[serde(default)]
     pub value: Option<f32>,
-    pub rank: usize,
-    pub indent_level: usize,
-    pub food_nutrient_id: usize,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UsdaFoodSearchAggregations {
-    pub data_type: UsdaFoodSearchDataType,
-}
+impl FoodEntryNutrient for UsdaFoodNutrient {
+    fn name(&self) -> &str {
+        &self.nutrient_name
+    }
 
-#[derive(Debug, Deserialize)]
-pub struct UsdaFoodSearchDataType {
-    #[serde(rename = "Branded")]
-    pub branded: usize,
-    #[serde(rename = "SR Legacy")]
-    pub sr_legacy: usize,
-    #[serde(rename = "Survey (FNDDS)")]
-    pub fndds_survey: usize,
-    #[serde(rename = "Foundation")]
-    pub foundation: usize,
-    #[serde(rename = "Experimental")]
-    pub experimental: usize,
+    fn unit_name(&self) -> &str {
+        &self.unit_name
+    }
+
+    fn value(&self) -> f32 {
+        self.value.unwrap_or_default()
+    }
 }

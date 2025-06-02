@@ -1,10 +1,9 @@
 use super::usda_types::UsdaFoodSearchResponse;
-use crate::{FoodSource, FoodSourceData, FoodSourceStatus};
+use crate::FoodSource;
 
 pub struct UsdaClient {
-    current_page: usize,
     page_size: usize,
-    total_pages: Option<usize>,
+    total_pages: usize,
     api_url: String,
     api_key: String,
 }
@@ -17,9 +16,8 @@ impl UsdaClient {
         let api_url = format!("{api_url}/foods/search");
 
         Self {
-            current_page: 0,
             page_size: 200,
-            total_pages: None,
+            total_pages: 2,
             api_url,
             api_key,
         }
@@ -29,17 +27,19 @@ impl UsdaClient {
 impl FoodSource for UsdaClient {
     type Data = UsdaFoodSearchResponse;
 
-    fn fetch_next(&mut self) -> impl Future<Output = FoodSourceData<Self::Data>> {
-        Box::pin(async move {
-            self.current_page += 1;
+    fn is_finished(&self, current_page: usize) -> bool {
+        current_page == self.total_pages
+    }
 
+    fn fetch(&self, current_page: usize) -> impl Future<Output = anyhow::Result<Self::Data>> {
+        Box::pin(async move {
             let client = reqwest::Client::new();
             let request = client
                 .get(&self.api_url)
                 .query(&[
                     ("api_key", &self.api_key),
                     ("pageSize", &self.page_size.to_string()),
-                    ("pageNumber", &self.current_page.to_string()),
+                    ("pageNumber", &current_page.to_string()),
                 ])
                 .build()
                 .expect("malformed USDA search request");
@@ -60,13 +60,9 @@ impl FoodSource for UsdaClient {
                 Err(e) => todo!("{e:?}"),
             };
 
-            self.total_pages = Some(data.total_pages);
-            let status = match self.current_page < data.total_pages {
-                true => FoodSourceStatus::HasRemainingResults,
-                false => FoodSourceStatus::SyncFinished,
-            };
+            // self.total_pages = data.total_pages;
 
-            FoodSourceData { data, status }
+            Ok(data)
         })
     }
 }

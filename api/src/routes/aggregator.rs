@@ -1,4 +1,3 @@
-use axum::extract::State;
 use axum::routing::get;
 use axum::{Extension, Json, Router};
 
@@ -12,7 +11,6 @@ pub fn aggregator_routes() -> Router<AppState> {
 }
 
 pub async fn run_aggregators(
-    State(state): State<AppState>,
     Extension(_user): Extension<User>,
 ) -> Result<Json<HttpResponse<bool>>, AppError> {
     Ok(Json(HttpResponse::from(true)))
