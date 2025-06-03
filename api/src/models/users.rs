@@ -23,7 +23,7 @@ impl User {
     pub async fn sync_from_clerk(
         executor: &mut PgConnection,
         clerk_user: ClerkUser,
-    ) -> anyhow::Result<User> {
+    ) -> sqlx::Result<User> {
         let user = sqlx::query_as!(
             User,
             "SELECT * FROM users WHERE clerk_id = $1",
@@ -41,7 +41,7 @@ impl User {
     pub async fn create_from_clerk(
         executor: &mut PgConnection,
         clerk_user: ClerkUser,
-    ) -> anyhow::Result<User> {
+    ) -> sqlx::Result<User> {
         let user = sqlx::query_as!(
             User,
             r#"

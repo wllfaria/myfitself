@@ -1,13 +1,19 @@
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use derive_more::{Display, Error, From};
 use serde::Serialize;
-use thiserror::Error;
 
-#[derive(Debug, Error)]
+use crate::services::clerk::ClerkError;
+
+#[derive(Debug, Error, Display, From)]
 pub enum AppError {
-    #[error("Something went wrong: {0}")]
+    #[display("Something went wrong: {_0}")]
+    #[error(ignore)]
     ServerError(String),
+
+    #[from]
+    Unauthorized(ClerkError),
 }
 
 #[derive(Serialize)]
@@ -41,13 +47,8 @@ impl AppError {
     fn error_code(&self) -> StatusCode {
         match self {
             AppError::ServerError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AppError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
         }
-    }
-}
-
-impl From<anyhow::Error> for AppError {
-    fn from(err: anyhow::Error) -> Self {
-        AppError::ServerError(err.to_string())
     }
 }
 

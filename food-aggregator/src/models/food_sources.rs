@@ -25,7 +25,7 @@ impl FoodSources {
     pub async fn maybe_create(
         executor: &mut PgConnection,
         create_source_payload: CreateFoodSourcePayload,
-    ) -> anyhow::Result<FoodSources> {
+    ) -> sqlx::Result<FoodSources> {
         let source = sqlx::query_as!(
             FoodSources,
             r#"

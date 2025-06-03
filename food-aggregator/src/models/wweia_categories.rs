@@ -27,7 +27,7 @@ impl WWEIACategories {
     pub async fn maybe_create(
         executor: &mut PgConnection,
         create_category_payload: CreateWWEIACategoryPayload<'_>,
-    ) -> anyhow::Result<WWEIACategories> {
+    ) -> sqlx::Result<WWEIACategories> {
         let category = sqlx::query_as!(
             WWEIACategories,
             r#"

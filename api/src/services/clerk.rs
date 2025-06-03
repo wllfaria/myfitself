@@ -1,15 +1,20 @@
 use clerk_rs::validators::authorizer::ClerkJwt;
-use thiserror::Error;
+use derive_more::{Display, Error};
 
 use crate::AppState;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Display)]
 pub enum ClerkError {
-    #[error("User is missing required field: `id`")]
+    #[display("User is missing required field: `id`")]
     MissingId,
 
-    #[error("User (ID: {0}) is missing required field: `email_address`")]
+    #[display("User (ID: {_0}) is missing required field: `email_address`")]
+    #[error(ignore)]
     MissingEmailAddress(String),
+
+    #[display("{_0}")]
+    #[error(ignore)]
+    FailedToGetUser(String),
 }
 
 #[derive(Debug)]
@@ -74,13 +79,15 @@ impl TryFrom<clerk_rs::models::User> for ClerkUser {
 }
 
 #[tracing::instrument(skip_all)]
-pub async fn get_clerk_user(state: &AppState, jwt: ClerkJwt) -> anyhow::Result<ClerkUser> {
+pub async fn get_clerk_user(state: &AppState, jwt: ClerkJwt) -> Result<ClerkUser, ClerkError> {
     // ID of the current user of the session (subject)
     // see https://clerk.com/docs/backend-requests/resources/session-tokens
     let user_id = jwt.sub;
 
-    let user = clerk_rs::apis::users_api::User::get_user(&state.clerk, &user_id).await?;
+    let user = match clerk_rs::apis::users_api::User::get_user(&state.clerk, &user_id).await {
+        Ok(user) => user,
+        Err(e) => return Err(ClerkError::FailedToGetUser(e.to_string())),
+    };
 
-    let user = ClerkUser::try_from(user)?;
-    Ok(user)
+    ClerkUser::try_from(user)
 }

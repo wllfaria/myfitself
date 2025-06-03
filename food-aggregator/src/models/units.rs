@@ -11,7 +11,7 @@ pub struct Units {
 }
 
 impl Units {
-    pub async fn maybe_create(conn: &mut PgConnection, name: &str) -> anyhow::Result<Units> {
+    pub async fn maybe_create(conn: &mut PgConnection, name: &str) -> sqlx::Result<Units> {
         let units = sqlx::query_as!(
             Units,
             r#"

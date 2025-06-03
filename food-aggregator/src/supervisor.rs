@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use derive_more::Display;
+use derive_more::{Display, Error, From};
 use governor::RateLimiter;
 use governor::clock::{Clock, QuantaClock, Reference};
 use governor::state::{InMemoryState, NotKeyed};
 use sqlx::PgConnection;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinError, JoinHandle};
 
 use crate::models::food_nutrients::{CreateFoodNutrientPayload, FoodNutrients};
 use crate::models::food_sources::{CreateFoodSourcePayload, FoodSources};
@@ -14,7 +14,7 @@ use crate::models::foods::{CreateFoodPayload, Foods};
 use crate::models::nutrients::Nutrients;
 use crate::models::units::Units;
 use crate::models::wweia_categories::{CreateWWEIACategoryPayload, WWEIACategories};
-use crate::{AggregateStatus, FoodSource};
+use crate::{AggregateStatus, FoodSource, SourceError};
 
 pub trait FoodData {
     type Entry: FoodEntry + Send + Sync;
@@ -55,6 +55,23 @@ impl WorkerId {
     }
 }
 
+#[derive(Debug, Display, Error, From)]
+pub enum WorkerError {
+    #[display("{_0}")]
+    #[error(ignore)]
+    SendMessage(String),
+    #[from]
+    FoodSource(SourceError),
+}
+
+#[derive(Debug, Display, Error, From)]
+pub enum SupervisorError {
+    #[from]
+    Database(sqlx::Error),
+    #[from]
+    Join(JoinError),
+}
+
 #[derive(Debug)]
 pub struct AggregatorSupervisor<'a, C, D>
 where
@@ -64,7 +81,7 @@ where
     worker_id: WorkerId,
     task_bound: usize,
     limiter: &'a mut RateLimiter<NotKeyed, InMemoryState, QuantaClock>,
-    workers: HashMap<WorkerId, JoinHandle<anyhow::Result<D>>>,
+    workers: HashMap<WorkerId, JoinHandle<Result<D, WorkerError>>>,
     client: Arc<C>,
 }
 
@@ -92,7 +109,7 @@ where
     }
 
     #[tracing::instrument(skip(self, tx), fields(source = %self.client.name()))]
-    pub async fn run(&mut self, tx: &mut PgConnection) -> anyhow::Result<AggregateStatus> {
+    pub async fn run(&mut self, tx: &mut PgConnection) -> Result<AggregateStatus, SupervisorError> {
         let (sender, mut receiver) = tokio::sync::mpsc::channel(self.task_bound);
         // Start from page 2 as first page will always be fetched outside to get the total_pages
         // data from the api
@@ -139,13 +156,15 @@ where
                         }
                         Err(e) => {
                             tracing::error!(error = ?e, "Failed to fetch page");
-                            return Err(e);
+                            return Err(e.into());
                         }
                     };
 
                     if let Err(e) = sender.send(WorkerMessage::Finished(worker_id)).await {
                         tracing::error!(error = ?e, "Failed to send finished message");
-                        return Err(e.into());
+                        return Err(WorkerError::SendMessage(format!(
+                            "worker {worker_id} failed to send message through channel"
+                        )));
                     };
 
                     Ok(result)
@@ -190,7 +209,7 @@ where
     }
 }
 
-pub async fn persist_food_data<D>(tx: &mut PgConnection, data: D) -> anyhow::Result<()>
+pub async fn persist_food_data<D>(tx: &mut PgConnection, data: D) -> Result<(), SupervisorError>
 where
     D: FoodData + Send + Sync,
 {

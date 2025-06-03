@@ -5,13 +5,13 @@ mod models;
 mod routes;
 mod services;
 
-use anyhow::Context;
 use axum::Router;
 use axum::middleware::from_fn_with_state;
 use clerk_rs::ClerkConfiguration;
 use clerk_rs::clerk::Clerk;
 use clerk_rs::validators::axum::ClerkLayer;
 use clerk_rs::validators::jwks::MemoryCacheJwksProvider;
+use food_aggregator::AggregateStatus;
 use middlewares::attach_user;
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
@@ -24,14 +24,14 @@ pub struct AppState {
     pub db: PgPool,
 }
 
-async fn db_connect() -> anyhow::Result<PgPool> {
-    let database_url = dotenvy::var("DATABASE_URL").context("DATABASE_URL env var must be set")?;
+async fn db_connect() -> sqlx::Result<PgPool> {
+    let database_url = dotenvy::var("DATABASE_URL").expect("DATABASE_URL env var must be set");
 
     let db = PgPoolOptions::new()
         .max_connections(20)
         .connect(&database_url)
         .await
-        .context("failed to connect to DATABASE_URL")?;
+        .expect("failed to connect to DATABASE_URL");
 
     sqlx::migrate!().run(&db).await?;
 
@@ -39,15 +39,14 @@ async fn db_connect() -> anyhow::Result<PgPool> {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::from_default_env())
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let port = dotenvy::var("PORT").context("PORT env var must be set")?;
-    let clerk_key =
-        dotenvy::var("CLERK_SECRET_KEY").context("CLERK_SECRET_KEY env var must be set")?;
+    let port = dotenvy::var("PORT").expect("PORT env var must be set");
+    let clerk_key = dotenvy::var("CLERK_SECRET_KEY").expect("CLERK_SECRET_KEY env var must be set");
 
     let config = ClerkConfiguration::new(None, None, Some(clerk_key), None);
 
@@ -59,7 +58,10 @@ async fn main() -> anyhow::Result<()> {
         loop {
             // TODO: don't ignore the error here
             match food_aggregator::aggregate_food_data(cron_db.clone()).await {
-                Ok(_) => tracing::info!("Aggregation finished successfully"),
+                Ok(status) => match status {
+                    AggregateStatus::Finished => tracing::info!("Aggregation finished"),
+                    AggregateStatus::PendingUntil(_) => tracing::info!("Aggregation postponed"),
+                },
                 Err(_) => tracing::error!("Aggregation failed to execute"),
             }
 

@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::usda_types::UsdaFoodSearchResponse;
-use crate::FoodSource;
+use crate::{FoodSource, SourceError};
 
 pub struct UsdaClient {
     page_size: usize,
@@ -37,7 +37,7 @@ impl FoodSource for UsdaClient {
         current_page > self.total_pages.load(Ordering::SeqCst)
     }
 
-    fn fetch(&self, current_page: usize) -> impl Future<Output = anyhow::Result<Self::Data>> {
+    fn fetch(&self, current_page: usize) -> impl Future<Output = Result<Self::Data, SourceError>> {
         Box::pin(async move {
             let client = reqwest::Client::new();
             let request = client
@@ -63,7 +63,7 @@ impl FoodSource for UsdaClient {
 
             let data = match response.json::<UsdaFoodSearchResponse>().await {
                 Ok(body) => body,
-                Err(e) => todo!("{e:?}"),
+                Err(e) => return Err(e.into()),
             };
 
             self.total_pages.store(data.total_pages, Ordering::SeqCst);

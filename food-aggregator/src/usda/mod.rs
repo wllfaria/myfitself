@@ -12,7 +12,7 @@ pub use usda_client::UsdaClient;
 use usda_types::UsdaFoodSearchResponse;
 
 use crate::supervisor::{AggregatorSupervisor, persist_food_data};
-use crate::{AggregateStatus, Aggregator, BoxFuture, FoodSource};
+use crate::{AggregateStatus, Aggregator, AggregatorError, BoxFuture, FoodSource};
 
 #[derive(Debug)]
 pub struct UsdaAggregator<C>
@@ -43,12 +43,12 @@ where
     C: FoodSource<Data = UsdaFoodSearchResponse> + 'static,
 {
     #[tracing::instrument(skip(self, pool))]
-    fn aggregate(&mut self, pool: PgPool) -> BoxFuture<anyhow::Result<AggregateStatus>> {
+    fn aggregate(&mut self, pool: PgPool) -> BoxFuture<Result<AggregateStatus, AggregatorError>> {
         Box::pin(async move {
             // Use one entry from limiter to account for the first request
             // Safety: first request will not fail rate-limit.
-            if let Err(e) = self.limiter.check() {
-                return Err(anyhow::anyhow!("Rate limit exceeded unexpectedly: {}", e));
+            if self.limiter.check().is_err() {
+                return Err(AggregatorError::UnexpectedRateLimit);
             }
             let mut tx = pool.begin().await?;
 
@@ -59,7 +59,7 @@ where
                 Err(e) => {
                     tracing::error!(error = ?e, "Failed to fetch first USDA page");
                     tx.rollback().await?;
-                    return Err(e);
+                    return Err(e.into());
                 }
             };
 
@@ -69,7 +69,7 @@ where
             if let Err(e) = persist_food_data(tx.as_mut(), first_page).await {
                 tracing::error!(error = ?e, "Failed to persist USDA first page food data");
                 tx.rollback().await?;
-                return Err(e);
+                return Err(e.into());
             };
 
             let client = self.client.clone();
@@ -85,7 +85,7 @@ where
                 Err(e) => {
                     tracing::error!(error = ?e, "USDA sync failed");
                     tx.rollback().await?;
-                    Err(e)
+                    Err(e.into())
                 }
             }
         })

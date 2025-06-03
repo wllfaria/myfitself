@@ -7,22 +7,31 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use chrono::Duration;
+use derive_more::{Display, Error, From};
 use models::aggregation_metadata::AggregateMetadataModel;
 use sqlx::PgPool;
 use sqlx::types::chrono::Utc;
-use supervisor::FoodData;
+use supervisor::{FoodData, SupervisorError};
 use tokio::sync::{Mutex, Notify};
 use tokio::time::Instant;
 use usda::{UsdaAggregator, UsdaClient};
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+#[derive(Debug, Display, Error, From)]
+pub enum SourceError {
+    #[from]
+    Database(sqlx::Error),
+    #[from]
+    Deserialize(reqwest::Error),
+}
+
 pub trait FoodSource: Send + Sync {
     type Data: FoodData;
 
     fn name(&self) -> &str;
-    fn fetch(&self, page: usize) -> impl Future<Output = anyhow::Result<Self::Data>> + Send;
     fn is_finished(&self, current_page: usize) -> bool;
+    fn fetch(&self, page: usize) -> impl Future<Output = Result<Self::Data, SourceError>> + Send;
 }
 
 #[derive(Debug)]
@@ -31,8 +40,19 @@ pub enum AggregateStatus {
     PendingUntil(Instant),
 }
 
+#[derive(Debug, Display, Error, From)]
+pub enum AggregatorError {
+    UnexpectedRateLimit,
+    #[from]
+    Database(sqlx::Error),
+    #[from]
+    Supervisor(SupervisorError),
+    #[from]
+    FoodSource(SourceError),
+}
+
 pub trait Aggregator: Send + Sync {
-    fn aggregate(&mut self, conn: PgPool) -> BoxFuture<anyhow::Result<AggregateStatus>>;
+    fn aggregate(&mut self, conn: PgPool) -> BoxFuture<Result<AggregateStatus, AggregatorError>>;
 }
 
 struct ScheduledAggregator {
@@ -61,7 +81,7 @@ impl PartialEq for ScheduledAggregator {
 impl Eq for ScheduledAggregator {}
 
 #[tracing::instrument(skip_all)]
-pub async fn aggregate_food_data(pool: PgPool) -> anyhow::Result<()> {
+pub async fn aggregate_food_data(pool: PgPool) -> Result<AggregateStatus, AggregatorError> {
     tracing::info!("Starting aggregation workflow");
     let mut conn = pool.acquire().await?;
     // TODO: probably not just propagate the error up here
@@ -75,7 +95,11 @@ pub async fn aggregate_food_data(pool: PgPool) -> anyhow::Result<()> {
 
     if !should_run {
         tracing::info!("Not enough time has passed since last aggregation");
-        return Ok(());
+        // Safety: if should_run is false then an entry must exist.
+        let entry = last_run_entry.unwrap();
+        let next_run_time = entry.last_run + Duration::days(30);
+        let wait_until = (next_run_time - Utc::now()).to_std().unwrap_or_default();
+        return Ok(AggregateStatus::PendingUntil(Instant::now() + wait_until));
     };
 
     let client = UsdaClient::new();
@@ -127,7 +151,7 @@ pub async fn aggregate_food_data(pool: PgPool) -> anyhow::Result<()> {
                     }
 
                     notify.notify_one();
-                    Ok::<(), anyhow::Error>(())
+                    Ok::<(), AggregatorError>(())
                 });
 
                 active_handles.lock().await.push(handle);
@@ -162,5 +186,5 @@ pub async fn aggregate_food_data(pool: PgPool) -> anyhow::Result<()> {
     AggregateMetadataModel::create(conn.as_mut()).await?;
     tracing::info!("Aggregation metadata stored");
 
-    Ok(())
+    Ok(AggregateStatus::Finished)
 }

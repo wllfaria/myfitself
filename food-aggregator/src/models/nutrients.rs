@@ -11,7 +11,7 @@ pub struct Nutrients {
 }
 
 impl Nutrients {
-    pub async fn maybe_create(conn: &mut PgConnection, name: &str) -> anyhow::Result<Nutrients> {
+    pub async fn maybe_create(conn: &mut PgConnection, name: &str) -> sqlx::Result<Nutrients> {
         let nutrients = sqlx::query_as!(
             Nutrients,
             r#"

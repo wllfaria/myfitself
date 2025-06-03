@@ -46,7 +46,7 @@ impl FoodNutrients {
     pub async fn create_or_update(
         executor: &mut PgConnection,
         create_nutrient_payload: CreateFoodNutrientPayload,
-    ) -> anyhow::Result<FoodNutrients> {
+    ) -> sqlx::Result<FoodNutrients> {
         let food_nutrient = sqlx::query_as!(
             FoodNutrients,
             r#"

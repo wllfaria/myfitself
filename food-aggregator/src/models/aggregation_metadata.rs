@@ -13,7 +13,7 @@ pub struct AggregateMetadataModel {
 impl AggregateMetadataModel {
     pub async fn get_last_run(
         executor: &mut PgConnection,
-    ) -> anyhow::Result<Option<AggregateMetadataModel>> {
+    ) -> sqlx::Result<Option<AggregateMetadataModel>> {
         let aggregation_metadata = sqlx::query_as!(
             AggregateMetadataModel,
             r#"
@@ -29,7 +29,9 @@ impl AggregateMetadataModel {
         Ok(aggregation_metadata)
     }
 
-    pub async fn create(executor: &mut PgConnection) -> anyhow::Result<AggregateMetadataModel> {
+    pub async fn create(
+        executor: &mut PgConnection,
+    ) -> Result<AggregateMetadataModel, sqlx::Error> {
         let aggregation_metadata = sqlx::query_as!(
             AggregateMetadataModel,
             "INSERT INTO aggregation_metadata DEFAULT VALUES RETURNING *;",
