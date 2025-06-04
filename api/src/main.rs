@@ -12,16 +12,19 @@ use clerk_rs::clerk::Clerk;
 use clerk_rs::validators::axum::ClerkLayer;
 use clerk_rs::validators::jwks::MemoryCacheJwksProvider;
 use food_aggregator::AggregateStatus;
-use middlewares::attach_user;
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
+use crate::middlewares::attach_user;
+use crate::services::search::SearchService;
+
 #[derive(Clone)]
 pub struct AppState {
     pub clerk: Clerk,
     pub db: PgPool,
+    pub search_service: SearchService,
 }
 
 async fn db_connect() -> sqlx::Result<PgPool> {
@@ -70,13 +73,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    let search_service = {
+        let mut conn = db.acquire().await?;
+        SearchService::new(&mut conn).await?
+    };
+
     let state = AppState {
         clerk: clerk.clone(),
+        search_service,
         db,
     };
 
     let clerk_layer = ClerkLayer::new(MemoryCacheJwksProvider::new(clerk), None, true);
     let auth_routes = routes::auth::auth_routes().layer(clerk_layer.clone());
+    let search_routes = routes::search::search_routes();
 
     let aggregate_routes = routes::aggregator::aggregator_routes()
         .layer(from_fn_with_state(state.clone(), attach_user))
@@ -85,6 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::<AppState>::new()
         .nest("/auth", auth_routes)
         .nest("/aggregator", aggregate_routes)
+        .nest("/search", search_routes)
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;

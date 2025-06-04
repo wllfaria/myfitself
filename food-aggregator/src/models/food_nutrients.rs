@@ -1,9 +1,10 @@
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 use sqlx::PgConnection;
 use sqlx::prelude::FromRow;
 use sqlx::types::Uuid;
 
-#[derive(Debug, FromRow)]
+#[derive(Debug, Serialize, FromRow)]
 pub struct FoodNutrients {
     id: sqlx::types::Uuid,
     food_id: Uuid,

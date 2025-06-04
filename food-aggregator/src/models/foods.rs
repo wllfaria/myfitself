@@ -1,7 +1,12 @@
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 use sqlx::PgConnection;
 use sqlx::prelude::FromRow;
 use sqlx::types::Uuid;
+
+use super::food_nutrients::FoodNutrients;
+use super::food_sources::FoodSources;
+use super::wweia_categories::WWEIACategories;
 
 #[derive(Debug, FromRow)]
 pub struct Foods {
@@ -42,7 +47,49 @@ impl<'data> CreateFoodPayload<'data> {
     }
 }
 
+#[derive(Debug, Serialize, FromRow)]
+pub struct SearchSchemaFood {
+    id: Uuid,
+    name: String,
+    source: String,
+}
+
+impl SearchSchemaFood {
+    pub fn id(&self) -> Uuid {
+        self.id
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+}
+
 impl Foods {
+    pub async fn get_for_search(
+        executor: &mut PgConnection,
+    ) -> sqlx::Result<Vec<SearchSchemaFood>> {
+        let search_schema = sqlx::query_as!(
+            SearchSchemaFood,
+            r#"
+            SELECT
+                f.id AS id,
+                f.name AS name,
+                fs.name AS source
+            FROM
+                foods f
+                JOIN food_sources fs ON f.source_id = fs.id;
+            "#
+        )
+        .fetch_all(executor)
+        .await?;
+
+        Ok(search_schema)
+    }
+
     pub async fn create_or_update(
         executor: &mut PgConnection,
         create_food_payload: CreateFoodPayload<'_>,

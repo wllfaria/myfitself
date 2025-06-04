@@ -73,7 +73,6 @@ where
             };
 
             let client = self.client.clone();
-            tracing::info!("making supervisor");
             let mut supervisor = AggregatorSupervisor::new(&mut self.limiter, client, total_pages);
 
             match supervisor.run(tx.as_mut()).await {

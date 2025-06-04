@@ -20,3 +20,4 @@ axum = "0.8.3"
 clerk-rs = { version = "0.4.1", features = ["axum"] }
 uuid = { version = "1.16.0", features = ["v4", "fast-rng", "macro-diagnostics", "serde"] }
 validator = { version = "0.20.0", features = ["derive"] }
+tantivy = "0.24.1"

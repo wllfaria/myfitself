@@ -3,6 +3,7 @@ use serde::Serialize;
 
 pub mod aggregator;
 pub mod auth;
+pub mod search;
 
 #[derive(Serialize)]
 pub struct HttpResponse<B> {

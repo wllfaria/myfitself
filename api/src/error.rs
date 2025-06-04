@@ -5,6 +5,7 @@ use derive_more::{Display, Error, From};
 use serde::Serialize;
 
 use crate::services::clerk::ClerkError;
+use crate::services::search::SearchError;
 
 #[derive(Debug, Error, Display, From)]
 pub enum AppError {
@@ -14,6 +15,9 @@ pub enum AppError {
 
     #[from]
     Unauthorized(ClerkError),
+
+    #[from]
+    Search(SearchError),
 }
 
 #[derive(Serialize)]
@@ -48,6 +52,7 @@ impl AppError {
         match self {
             AppError::ServerError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             AppError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
+            AppError::Search(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 }

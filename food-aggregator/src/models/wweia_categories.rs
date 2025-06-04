@@ -1,8 +1,9 @@
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 use sqlx::PgConnection;
 use sqlx::prelude::FromRow;
 
-#[derive(Debug, FromRow)]
+#[derive(Debug, Serialize, FromRow)]
 pub struct WWEIACategories {
     pub id: sqlx::types::Uuid,
     pub code: i32,
