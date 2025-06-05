@@ -1,11 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use derive_more::{Display, Error, From};
 use governor::RateLimiter;
 use governor::clock::{Clock, QuantaClock, Reference};
 use governor::state::{InMemoryState, NotKeyed};
-use sqlx::PgConnection;
+use sqlx::{PgConnection, QueryBuilder};
 use tokio::task::{JoinError, JoinHandle};
 
 use crate::models::food_nutrients::{CreateFoodNutrientPayload, FoodNutrients};
@@ -18,21 +18,25 @@ use crate::{AggregateStatus, FoodSource, SourceError};
 
 pub trait FoodData {
     type Entry: FoodEntry + Send + Sync;
-    type EntryIter: Iterator<Item = Self::Entry> + Send + Sync;
+    type EntryIter<'a>: Iterator<Item = &'a Self::Entry> + Send + Sync
+    where
+        Self: 'a;
 
-    fn entries(self) -> Self::EntryIter;
+    fn entries(&self) -> Self::EntryIter<'_>;
 }
 
 pub trait FoodEntry {
     type Nutrient: FoodEntryNutrient + Send + Sync;
-    type NutrientIter: Iterator<Item = Self::Nutrient> + Send + Sync;
+    type NutrientIter<'a>: Iterator<Item = &'a Self::Nutrient> + Send + Sync
+    where
+        Self: 'a;
 
     fn source(&self) -> String;
-    fn wweia_data(&self) -> (Option<i32>, Option<&String>);
+    fn wweia_data(&self) -> Option<(i32, &String)>;
     fn name(&self) -> &str;
     fn fndds_code(&self) -> Option<i32>;
     fn id(&self) -> i32;
-    fn nutrients(self) -> Self::NutrientIter;
+    fn nutrients(&self) -> Self::NutrientIter<'_>;
 }
 
 pub trait FoodEntryNutrient {
@@ -116,20 +120,25 @@ where
         // TODO: maybe receive this as an argument
         let mut current_page = 2;
         tracing::info!(%current_page, "supervisor starting");
+        let mut status = AggregateStatus::Finished;
 
         loop {
             while self.workers.len() < self.task_bound {
+                // stop creating workers if the client is finished
                 if self.client.is_finished(current_page) {
                     break;
                 }
 
+                // if we hit the rate limit, we stop creating workers, but cache the status to
+                // return later
                 if let Err(err) = self.limiter.check() {
                     let now = governor::clock::QuantaClock::default().now();
                     let earliest = err.earliest_possible();
 
                     let wait_duration = earliest.duration_since(now);
                     let wake_time = tokio::time::Instant::now() + wait_duration.into();
-                    return Ok(AggregateStatus::PendingUntil(wake_time));
+                    status = AggregateStatus::PendingUntil(wake_time);
+                    break;
                 }
 
                 let sender = sender.clone();
@@ -151,17 +160,21 @@ where
                     let sender = sender.clone();
                     let result = match client.fetch(current_page).await {
                         Ok(data) => {
-                            tracing::debug!("Fetched page successfully");
+                            tracing::info!("Fetched page successfully");
                             data
                         }
                         Err(e) => {
                             tracing::error!(error = ?e, "Failed to fetch page");
+                            // TODO: this is bad as every other worker will start erroring due to
+                            // the channel closing
                             return Err(e.into());
                         }
                     };
 
                     if let Err(e) = sender.send(WorkerMessage::Finished(worker_id)).await {
                         tracing::error!(error = ?e, "Failed to send finished message");
+                        // TODO: this is bad as every other worker will start erroring due to the
+                        // channel closing
                         return Err(WorkerError::SendMessage(format!(
                             "worker {worker_id} failed to send message through channel"
                         )));
@@ -175,9 +188,7 @@ where
             }
 
             if self.workers.is_empty() {
-                // This is a warning as its very suspicious if there is no content on a data source
-                tracing::warn!("No work to be done");
-                return Ok(AggregateStatus::Finished);
+                break;
             }
 
             while let Some(message) = receiver.recv().await {
@@ -191,9 +202,11 @@ where
 
                         match result {
                             Ok(data) => {
+                                let now = std::time::Instant::now();
                                 tracing::debug!(%worker_id, "Persisting food data");
                                 persist_food_data(tx, data).await?;
-                                tracing::info!(%worker_id, "Data persisted");
+                                tracing::info!(%worker_id, "Data persisted, took: {took:?}", took=now.elapsed());
+                                break;
                             }
                             Err(e) => tracing::error!(?worker_id, error = ?e, "Worker failed"),
                         };
@@ -202,10 +215,12 @@ where
 
                 if self.client.is_finished(current_page) && self.workers.is_empty() {
                     tracing::info!("All workers completed");
-                    return Ok(AggregateStatus::Finished);
+                    break;
                 }
             }
         }
+
+        Ok(status)
     }
 }
 
@@ -213,41 +228,70 @@ pub async fn persist_food_data<D>(tx: &mut PgConnection, data: D) -> Result<(), 
 where
     D: FoodData + Send + Sync,
 {
-    for entry in data.entries() {
-        let source = entry.source();
-        let source = FoodSources::maybe_create(tx, CreateFoodSourcePayload::new(source)).await?;
+    let mut sources = HashSet::new();
+    let mut categories = HashSet::new();
+    let mut nutrients = HashSet::new();
+    let mut units = HashSet::new();
 
-        let category_id = match entry.wweia_data() {
-            (Some(id), Some(name)) => {
-                let payload = CreateWWEIACategoryPayload::new(id, name);
-                let category = WWEIACategories::maybe_create(tx, payload).await?;
-                Some(category.id)
-            }
-            _ => None,
-        };
+    for entry in data.entries() {
+        sources.insert(entry.source());
+
+        if let Some((id, name)) = entry.wweia_data() {
+            categories.insert((id, name));
+        }
+
+        for nutrient in entry.nutrients() {
+            nutrients.insert(nutrient.name());
+            units.insert(nutrient.unit_name());
+        }
+    }
+
+    let source_id_map = FoodSources::maybe_create_bulk(tx, sources.into_iter()).await?;
+    let category_id_map = WWEIACategories::maybe_create_bulk(tx, categories.into_iter()).await?;
+    let nutient_id_map = Nutrients::maybe_create_bulk(tx, nutrients.into_iter()).await?;
+    let unit_id_map = Units::maybe_create_bulk(tx, units.into_iter()).await?;
+
+    let mut foods = vec![];
+    for entry in data.entries() {
+        let source_id = source_id_map[&entry.source()];
+        let category_id = entry
+            .wweia_data()
+            .and_then(|(_, name)| category_id_map.get(name).copied());
 
         let payload = CreateFoodPayload::new(
             entry.name(),
             entry.fndds_code(),
-            source.id,
+            source_id,
             entry.id(),
             category_id,
         );
-        let stored_food = Foods::create_or_update(tx, payload).await?;
+        foods.push(payload);
+    }
+
+    let food_id_map = Foods::create_or_update_bulk(tx, foods.into_iter()).await?;
+
+    for entry in data.entries() {
+        let food_key = (entry.source(), entry.id());
+        let food_id = food_id_map[&food_key];
+        let source_id = source_id_map[&entry.source()];
+        let mut food_nutrients = vec![];
 
         for nutrient in entry.nutrients() {
-            let stored_nutrient = Nutrients::maybe_create(tx, nutrient.name()).await?;
-            let unit = Units::maybe_create(tx, nutrient.unit_name()).await?;
+            let nutrient_id = nutient_id_map[nutrient.name()];
+            let unit_id = unit_id_map[nutrient.unit_name()];
 
             let payload = CreateFoodNutrientPayload::new(
-                stored_food.id,
-                stored_nutrient.id,
-                unit.id,
-                source.id,
+                food_id,
+                nutrient_id,
+                unit_id,
+                source_id,
                 nutrient.value(),
             );
-            FoodNutrients::create_or_update(tx, payload).await?;
+
+            food_nutrients.push(payload);
         }
+
+        FoodNutrients::create_or_update_bulk(tx, food_nutrients).await?;
     }
 
     Ok(())

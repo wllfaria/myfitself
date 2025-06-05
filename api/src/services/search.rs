@@ -4,7 +4,7 @@ use serde::Serialize;
 use sqlx::PgConnection;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
-use tantivy::schema::{STORED, Schema, SchemaBuilder, TEXT, Value};
+use tantivy::schema::{Field, STORED, Schema, SchemaBuilder, TEXT, Value};
 use tantivy::{Index, IndexReader, ReloadPolicy, TantivyDocument, doc};
 
 const INDEX_MEMORY_BUDGET: usize = 50_000_000; // 50MB
@@ -24,6 +24,9 @@ pub struct SearchService {
     index: Index,
     schema: Schema,
     reader: IndexReader,
+    id_field: Field,
+    name_field: Field,
+    source_field: Field,
 }
 
 #[derive(Debug, Serialize)]
@@ -42,10 +45,17 @@ impl SearchService {
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
             .try_into()?;
 
+        let id_field = schema.get_field("id")?;
+        let name_field = schema.get_field("name")?;
+        let source_field = schema.get_field("source")?;
+
         Ok(SearchService {
             schema,
             index,
             reader,
+            id_field,
+            name_field,
+            source_field,
         })
     }
 
@@ -54,18 +64,8 @@ impl SearchService {
         query: S,
         limit: usize,
     ) -> Result<Vec<FoodSearchResult>, SearchError> {
-        let reader = self
-            .index
-            .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommitWithDelay)
-            .try_into()?;
-
-        let id_field = self.schema.get_field("id")?;
-        let name_field = self.schema.get_field("name")?;
-        let source_field = self.schema.get_field("source")?;
-
-        let searcher = reader.searcher();
-        let query_parser = QueryParser::for_index(&self.index, vec![name_field]);
+        let searcher = self.reader.searcher();
+        let query_parser = QueryParser::for_index(&self.index, vec![self.name_field]);
         let query = query_parser.parse_query(query.as_ref()).unwrap();
         let top_docs = searcher.search(&query, &TopDocs::with_limit(limit))?;
 
@@ -74,19 +74,19 @@ impl SearchService {
             let document: TantivyDocument = searcher.doc(doc_addr)?;
 
             let id = document
-                .get_first(id_field)
+                .get_first(self.id_field)
                 .and_then(|v| v.as_str())
                 .map(ToOwned::to_owned)
                 .expect("document id must be a string");
 
             let name = document
-                .get_first(name_field)
+                .get_first(self.name_field)
                 .and_then(|v| v.as_str())
                 .map(ToOwned::to_owned)
                 .expect("document name must be a string");
 
             let source = document
-                .get_first(source_field)
+                .get_first(self.source_field)
                 .and_then(|v| v.as_str())
                 .map(ToOwned::to_owned)
                 .expect("document source must be a string");

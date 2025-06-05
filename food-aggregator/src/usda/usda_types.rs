@@ -11,10 +11,10 @@ pub struct UsdaFoodSearchResponse {
 
 impl FoodData for UsdaFoodSearchResponse {
     type Entry = UsdaFoodSearchFood;
-    type EntryIter = std::vec::IntoIter<Self::Entry>;
+    type EntryIter<'a> = std::slice::Iter<'a, Self::Entry>;
 
-    fn entries(self) -> Self::EntryIter {
-        self.foods.into_iter()
+    fn entries(&self) -> Self::EntryIter<'_> {
+        self.foods.iter()
     }
 }
 
@@ -34,14 +34,15 @@ pub struct UsdaFoodSearchFood {
 
 impl FoodEntry for UsdaFoodSearchFood {
     type Nutrient = UsdaFoodNutrient;
-    type NutrientIter = std::vec::IntoIter<Self::Nutrient>;
+    type NutrientIter<'a> = std::slice::Iter<'a, Self::Nutrient>;
 
     fn source(&self) -> String {
         String::from("USDA")
     }
 
-    fn wweia_data(&self) -> (Option<i32>, Option<&String>) {
-        (self.food_category_id, self.food_category.as_ref())
+    fn wweia_data(&self) -> Option<(i32, &String)> {
+        self.food_category_id
+            .map(|id| (id, self.food_category.as_ref().unwrap()))
     }
 
     fn name(&self) -> &str {
@@ -56,8 +57,8 @@ impl FoodEntry for UsdaFoodSearchFood {
         self.fdc_id
     }
 
-    fn nutrients(self) -> Self::NutrientIter {
-        self.food_nutrients.into_iter()
+    fn nutrients(&self) -> Self::NutrientIter<'_> {
+        self.food_nutrients.iter()
     }
 }
 

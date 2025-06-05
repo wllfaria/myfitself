@@ -1,8 +1,10 @@
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use sqlx::PgConnection;
 use sqlx::prelude::FromRow;
 use sqlx::types::Uuid;
+use sqlx::{PgConnection, QueryBuilder};
 
 use super::food_nutrients::FoodNutrients;
 use super::food_sources::FoodSources;
@@ -102,8 +104,7 @@ impl Foods {
             ON CONFLICT (source_id, external_id) DO UPDATE SET
                 name = EXCLUDED.name,
                 fndds_code = EXCLUDED.fndds_code,
-                wweia_category = EXCLUDED.wweia_category,
-                updated_at = NOW()
+                wweia_category = EXCLUDED.wweia_category
             RETURNING *;
             "#,
             create_food_payload.name,
@@ -116,5 +117,47 @@ impl Foods {
         .await?;
 
         Ok(food)
+    }
+
+    pub async fn create_or_update_bulk(
+        executor: &mut PgConnection,
+        mut bulk_create_payload: impl Iterator<Item = CreateFoodPayload<'_>>,
+    ) -> sqlx::Result<HashMap<(String, i32), Uuid>> {
+        let mut query_builder = QueryBuilder::new(
+            "INSERT INTO foods (name, source_id, external_id, fndds_code, wweia_category) ",
+        );
+        query_builder.push_values(&mut bulk_create_payload, |mut b, payload| {
+            b.push_bind(payload.name)
+                .push_bind(payload.source_id)
+                .push_bind(payload.external_id)
+                .push_bind(payload.fndds_code)
+                .push_bind(payload.wweia_category);
+        });
+        query_builder.push(
+            r#" ON CONFLICT (source_id, external_id) DO UPDATE SET
+                name = EXCLUDED.name,
+                fndds_code = EXCLUDED.fndds_code,
+                wweia_category = EXCLUDED.wweia_category
+            "#,
+        );
+        query_builder.build().execute(executor.as_mut()).await?;
+
+        let mut query_builder = QueryBuilder::new(
+            r#"
+            SELECT f.id, f.external_id, s.name as source_name
+            FROM foods f
+            JOIN food_sources s ON f.source_id = s.id
+            "#,
+        );
+
+        let map = query_builder
+            .build_query_as::<(Uuid, i32, String)>()
+            .fetch_all(executor.as_mut())
+            .await?
+            .into_iter()
+            .map(|(id, external_id, source_name)| ((source_name, external_id), id))
+            .collect();
+
+        Ok(map)
     }
 }

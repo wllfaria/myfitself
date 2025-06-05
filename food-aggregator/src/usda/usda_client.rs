@@ -58,7 +58,8 @@ impl FoodSource for UsdaClient {
 
             // TODO: if a request fails, we should store it somewhere and try again later
             if !response.status().is_success() {
-                todo!();
+                tracing::error!("{response:?}");
+                println!()
             }
 
             let data = match response.json::<UsdaFoodSearchResponse>().await {

@@ -28,7 +28,7 @@ where
     C: FoodSource<Data = UsdaFoodSearchResponse>,
 {
     pub fn new(client: C) -> Self {
-        let quota = Quota::per_hour(NonZeroU32::new(1000).unwrap());
+        let quota = Quota::per_hour(NonZeroU32::new(30).unwrap());
         let limiter = RateLimiter::direct(quota);
 
         Self {
