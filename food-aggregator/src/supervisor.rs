@@ -46,8 +46,16 @@ pub trait FoodEntryNutrient {
 }
 
 #[derive(Debug)]
-enum WorkerMessage {
-    Finished(WorkerId),
+struct WorkerResult<D> {
+    worker_id: WorkerId,
+    page: usize,
+    result: Result<D, SourceError>,
+    retries: usize,
+}
+
+#[derive(Debug)]
+enum WorkerMessage<D> {
+    Completed(WorkerResult<D>),
 }
 
 #[derive(Debug, Display, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -84,8 +92,10 @@ where
 {
     worker_id: WorkerId,
     task_bound: usize,
+    max_retries: usize,
     limiter: &'a mut RateLimiter<NotKeyed, InMemoryState, QuantaClock>,
-    workers: HashMap<WorkerId, JoinHandle<Result<D, WorkerError>>>,
+    workers: HashMap<WorkerId, JoinHandle<Result<(), WorkerError>>>,
+    retry_queue: Vec<(usize, usize)>, // (page, retry_count)
     client: Arc<C>,
 }
 
@@ -107,8 +117,10 @@ where
             client,
             limiter,
             task_bound,
+            max_retries: 3,
             worker_id: WorkerId::default(),
             workers: HashMap::with_capacity(task_bound),
+            retry_queue: Vec::new(),
         }
     }
 
@@ -123,8 +135,23 @@ where
         let mut status = AggregateStatus::Finished;
 
         loop {
+            // Process retry queue first
+            while self.workers.len() < self.task_bound && !self.retry_queue.is_empty() {
+                if let Err(err) = self.limiter.check() {
+                    let now = governor::clock::QuantaClock::default().now();
+                    let earliest = err.earliest_possible();
+                    let wait_duration = earliest.duration_since(now);
+                    let wake_time = tokio::time::Instant::now() + wait_duration.into();
+                    status = AggregateStatus::PendingUntil(wake_time);
+                    break;
+                }
+
+                let (page, retry_count) = self.retry_queue.remove(0);
+                self.spawn_worker(&sender, page, retry_count);
+            }
+
             while self.workers.len() < self.task_bound {
-                // stop creating workers if the client is finished
+                // stop creating workers if the client is finished and no retries are pending
                 if self.client.is_finished(current_page) {
                     break;
                 }
@@ -141,50 +168,8 @@ where
                     break;
                 }
 
-                let sender = sender.clone();
-                let client = self.client.clone();
-                let worker_id = self.worker_id;
-                self.worker_id.next();
-
-                let span = tracing::span!(
-                    tracing::Level::INFO,
-                    "page_worker",
-                    %worker_id,
-                    %current_page
-                );
-
-                let handle = tokio::spawn(async move {
-                    let _guard = span.enter();
-                    tracing::info!("Worker started");
-
-                    let sender = sender.clone();
-                    let result = match client.fetch(current_page).await {
-                        Ok(data) => {
-                            tracing::info!("Fetched page successfully");
-                            data
-                        }
-                        Err(e) => {
-                            tracing::error!(error = ?e, "Failed to fetch page");
-                            // TODO: this is bad as every other worker will start erroring due to
-                            // the channel closing
-                            return Err(e.into());
-                        }
-                    };
-
-                    if let Err(e) = sender.send(WorkerMessage::Finished(worker_id)).await {
-                        tracing::error!(error = ?e, "Failed to send finished message");
-                        // TODO: this is bad as every other worker will start erroring due to the
-                        // channel closing
-                        return Err(WorkerError::SendMessage(format!(
-                            "worker {worker_id} failed to send message through channel"
-                        )));
-                    };
-
-                    Ok(result)
-                });
-
+                self.spawn_worker(&sender, current_page, 0);
                 current_page += 1;
-                self.workers.insert(worker_id, handle);
             }
 
             if self.workers.is_empty() {
@@ -193,27 +178,79 @@ where
 
             while let Some(message) = receiver.recv().await {
                 match message {
-                    WorkerMessage::Finished(worker_id) => {
-                        let result = self
+                    WorkerMessage::Completed(worker_result) => {
+                        let worker_handle = self
                             .workers
-                            .remove(&worker_id)
-                            .expect("unexisting worker id sent through channel")
-                            .await?;
+                            .remove(&worker_result.worker_id)
+                            .expect("unexisting worker id sent through channel");
 
-                        match result {
-                            Ok(data) => {
-                                let now = std::time::Instant::now();
-                                tracing::debug!(%worker_id, "Persisting food data");
-                                persist_food_data(tx, data).await?;
-                                tracing::info!(%worker_id, "Data persisted, took: {took:?}", took=now.elapsed());
-                                break;
+                        // Await the worker to ensure it completed properly
+                        match worker_handle.await? {
+                            Ok(()) => {
+                                match worker_result.result {
+                                    Ok(data) => {
+                                        let now = std::time::Instant::now();
+                                        tracing::debug!(worker_id = %result.worker_id, page = %result.page, "Persisting food data");
+
+                                        match persist_food_data(tx, data).await {
+                                            Ok(_) => tracing::info!(
+                                                worker_id = %worker_result.worker_id,
+                                                page = %worker_result.page,
+                                                "Data persisted successfully, took: {took:?}",
+                                                took = now.elapsed()
+                                            ),
+                                            Err(e) => tracing::error!(
+                                                worker_id = %worker_result.worker_id,
+                                                page = %worker_result.page,
+                                                error = ?e,
+                                                "Failed to persist data"
+                                            ),
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            worker_id = %worker_result.worker_id,
+                                            page = %worker_result.page,
+                                            retries = %worker_result.retries,
+                                            error = ?e,
+                                            "Worker failed to fetch data"
+                                        );
+
+                                        // Add to retry queue if we haven't exceeded max retries
+                                        if worker_result.retries < self.max_retries {
+                                            tracing::info!(
+                                                page = %worker_result.page,
+                                                retry_count = %(worker_result.retries + 1),
+                                                "Adding page to retry queue"
+                                            );
+                                            self.retry_queue.push((
+                                                worker_result.page,
+                                                worker_result.retries + 1,
+                                            ));
+                                        } else {
+                                            tracing::error!(
+                                                page = %worker_result.page,
+                                                "Max retries exceeded, giving up on page"
+                                            );
+                                        }
+                                    }
+                                }
                             }
-                            Err(e) => tracing::error!(?worker_id, error = ?e, "Worker failed"),
-                        };
+                            Err(e) => {
+                                tracing::error!(
+                                    worker_id = %worker_result.worker_id,
+                                    error = ?e,
+                                    "Worker task failed"
+                                );
+                            }
+                        }
                     }
                 }
 
-                if self.client.is_finished(current_page) && self.workers.is_empty() {
+                if self.client.is_finished(current_page)
+                    && self.workers.is_empty()
+                    && self.retry_queue.is_empty()
+                {
                     tracing::info!("All workers completed");
                     break;
                 }
@@ -221,6 +258,52 @@ where
         }
 
         Ok(status)
+    }
+
+    fn spawn_worker(
+        &mut self,
+        sender: &tokio::sync::mpsc::Sender<WorkerMessage<D>>,
+        page: usize,
+        retry_count: usize,
+    ) {
+        let sender = sender.clone();
+        let client = self.client.clone();
+        let worker_id = self.worker_id;
+        self.worker_id.next();
+
+        let span = tracing::span!(
+            tracing::Level::INFO,
+            "page_worker",
+            %worker_id,
+            %page,
+            %retry_count
+        );
+
+        let handle = tokio::spawn(async move {
+            let _guard = span.enter();
+            tracing::info!("Worker started");
+
+            let result = client.fetch(page).await;
+
+            let worker_result = WorkerResult {
+                worker_id,
+                page,
+                result,
+                retries: retry_count,
+            };
+
+            // Always send the result, don't fail the worker for channel issues
+            if let Err(e) = sender.send(WorkerMessage::Completed(worker_result)).await {
+                tracing::error!(error = ?e, "Failed to send worker result - channel may be closed");
+                return Err(WorkerError::SendMessage(format!(
+                    "worker {worker_id} failed to send result through channel: {e}"
+                )));
+            }
+
+            Ok(())
+        });
+
+        self.workers.insert(worker_id, handle);
     }
 }
 

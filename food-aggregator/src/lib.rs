@@ -9,8 +9,8 @@ use std::sync::Arc;
 use chrono::Duration;
 use derive_more::{Display, Error, From};
 use models::aggregation_metadata::AggregateMetadataModel;
-use sqlx::PgPool;
 use sqlx::types::chrono::Utc;
+use sqlx::{PgConnection, PgPool};
 use supervisor::{FoodData, SupervisorError};
 use tokio::sync::{Mutex, Notify};
 use tokio::time::Instant;
@@ -84,23 +84,10 @@ impl Eq for ScheduledAggregator {}
 pub async fn aggregate_food_data(pool: PgPool) -> Result<AggregateStatus, AggregatorError> {
     tracing::info!("Starting aggregation workflow");
     let mut conn = pool.acquire().await?;
-    // TODO: probably not just propagate the error up here
-    let last_run_entry =
-        models::aggregation_metadata::AggregateMetadataModel::get_last_run(conn.as_mut()).await?;
 
-    let should_run = match &last_run_entry {
-        Some(entry) => Utc::now() - entry.last_run >= Duration::days(30),
-        None => true,
-    };
-
-    if !should_run {
-        tracing::info!("Not enough time has passed since last aggregation");
-        // Safety: if should_run is false then an entry must exist.
-        let entry = last_run_entry.unwrap();
-        let next_run_time = entry.last_run + Duration::days(30);
-        let wait_until = (next_run_time - Utc::now()).to_std().unwrap_or_default();
-        return Ok(AggregateStatus::PendingUntil(Instant::now() + wait_until));
-    };
+    if !should_run_aggregation(&mut conn).await? {
+        return Ok(calculate_next_run_time(&mut conn).await?);
+    }
 
     let client = UsdaClient::new();
     let usda_aggregator = UsdaAggregator::new(client);
@@ -187,4 +174,31 @@ pub async fn aggregate_food_data(pool: PgPool) -> Result<AggregateStatus, Aggreg
     tracing::info!("Aggregation metadata stored");
 
     Ok(AggregateStatus::Finished)
+}
+
+async fn should_run_aggregation(conn: &mut PgConnection) -> Result<bool, AggregatorError> {
+    // TODO: probably not just propagate the error up here
+    let last_run_entry =
+        models::aggregation_metadata::AggregateMetadataModel::get_last_run(conn.as_mut()).await?;
+
+    let should_run = match &last_run_entry {
+        Some(entry) => Utc::now() - entry.last_run >= Duration::days(30),
+        None => true,
+    };
+
+    Ok(should_run)
+}
+
+async fn calculate_next_run_time(
+    conn: &mut PgConnection,
+) -> Result<AggregateStatus, AggregatorError> {
+    tracing::info!("Not enough time has passed since last aggregation");
+    let last_run_entry =
+        models::aggregation_metadata::AggregateMetadataModel::get_last_run(conn.as_mut()).await?;
+
+    let Some(entry) = last_run_entry else { return Ok(AggregateStatus::Finished) };
+    let next_run_time = entry.last_run + Duration::days(30);
+    let wait_until = (next_run_time - Utc::now()).to_std().unwrap_or_default();
+
+    Ok(AggregateStatus::PendingUntil(Instant::now() + wait_until))
 }
